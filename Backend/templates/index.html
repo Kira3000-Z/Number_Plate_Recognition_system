@@ -352,7 +352,7 @@
 
         let socket = null; // Variable to hold the Socket.IO object
         let streamingInterval = null; // To hold the interval timer for sending frames
-        const frameSendInterval = 100; // Send a frame every 100ms (~10 fps). Adjust for performance vs latency.
+        const frameSendInterval = 200; // Send a frame every 200ms (~5 fps). Adjusted for performance.
         let cameraStream = null; // Variable to hold the camera stream object
 
         // Function to check if Socket.IO is connected and enable/disable the start button
@@ -601,10 +601,8 @@
         startButton.addEventListener('click', function() {
             console.log('[Event Listener] Start button clicked.');
             // When start is clicked, first try to start the camera
-            // startCamera() will call startSendingFrames() if successful and Socket.IO is open
             startCamera();
-             // Disable the start button immediately to prevent multiple clicks
-            startButton.disabled = true;
+            // The startSendingFrames will be called inside startCamera's success handler
         });
         stopButton.addEventListener('click', stopStreaming);
         // Add event listener for the new Clear History button
