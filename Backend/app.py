@@ -4,12 +4,39 @@ import cv2
 import easyocr
 import torch
 from ultralytics import YOLO
-import time # Import time for potential debugging or timestamping
+import time 
+import json
+import logging
+import torch.serialization
+from PIL import Image 
+import io 
 
-# Ensure you are importing Flask and request from flask
 from flask import Flask, render_template, request
-# Ensure you are importing SocketIO and emit from flask_socketio
-from flask_socketio import SocketIO, emit # This is the correct import for Flask-SocketIO
+from flask_socketio import SocketIO, emit 
+from gevent import monkey 
+monkey.patch_all() 
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+# Flask App Setup 
+app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
+
+print("Flask app initialized.")
+
+# SocketIO Setup 
+# Initialize SocketIO with the Flask app.
+
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode='gevent',
+    ping_interval=300, # 5 minutes (in seconds)
+    ping_timeout=300   # 5 minutes (in seconds)
+)
+
+print("SocketIO initialized.")
 
 # Configuration 
 # Set the desired backend for EasyOCR 
@@ -20,51 +47,79 @@ if torch.cuda.is_available():
 else:
     print("CUDA not available. Using CPU for EasyOCR.")
 
-# Socket.IO Timeout Configuration 
-# Setting them very high (e.g., 5 minutes) should prevent timeouts during processing.
-SOCKETIO_PING_INTERVAL = 300 # 5 minutes
-SOCKETIO_PING_TIMEOUT = 300 # 5 minutes
+# Repeated Detection Filtering Configuration
+REQUIRED_CONSECUTIVE_DETECTIONS = 3 # Number of times a plate must be detected consecutively to be sent
+DETECTION_HISTORY_SIZE = 5 # How many recent detections to keep track of (optional, for more complex logic)
 
+# Model Loading 
+# Declare yolo_model and reader at the top level
+yolo_model = None
+reader = None
 
-# Initialize Flask App and Socket.IO
-# Use gevent as the async mode for background tasks, as recommended by Flask-SocketIO docs
-app = Flask(__name__)
-# Allow cross-origin requests for Socket.IO if your frontend is on a different domain/port
-# Initialize SocketIO with the Flask app. Specify async_mode='gevent' for background tasks to work correctly with gevent
-socketio = SocketIO(
-    app,
-    cors_allowed_origins="*",
-    async_mode='gevent',
-    ping_interval=SOCKETIO_PING_INTERVAL, # Set the ping interval
-    ping_timeout=SOCKETIO_PING_TIMEOUT   # Set the ping timeout
-) # Initialize SocketIO with the Flask app
-
-# Load Models (Global Scope for efficiency)
-# Load EasyOCR reader
-print(f"Loading EasyOCR with device: {EASYOCR_DEVICE}...")
+# Attempt to import necessary ultralytics components and initialize variables for Pylance
+tasks = None
+_DETECTION_MODEL_AVAILABLE = False
 try:
+    from ultralytics.nn import tasks
+    _DETECTION_MODEL_AVAILABLE = hasattr(tasks, 'DetectionModel') and tasks.DetectionModel is not None
+    if _DETECTION_MODEL_AVAILABLE:
+        app.logger.info("ultralytics.nn.tasks.DetectionModel found.")
+    else:
+         app.logger.warning("ultralytics.nn.tasks.DetectionModel not found or is None.")
+except ImportError:
+    _DETECTION_MODEL_AVAILABLE = False
+    app.logger.warning("Could not import ultralytics.nn.tasks.")
+
+yolo_models_module = None
+_YOLO_MODEL_CLASS_AVAILABLE = False
+try:
+    import ultralytics.models.yolo.model as yolo_models_module
+    _YOLO_MODEL_CLASS_AVAILABLE = hasattr(yolo_models_module, 'Model') and yolo_models_module.Model is not None
+    if _YOLO_MODEL_CLASS_AVAILABLE:
+         app.logger.info("ultralytics.models.yolo.model.Model found.")
+    else:
+         app.logger.warning("ultralytics.models.yolo.model.Model not found or is None.")
+except ImportError:
+    _YOLO_MODEL_CLASS_AVAILABLE = False
+    app.logger.warning("Could not import ultralytics.models.yolo.model.")
+
+
+try:
+    app.logger.info("Attempting to load YOLO model...")
+    # Build the list of allowed globals dynamically
+    allowed_globals = []
+    if _DETECTION_MODEL_AVAILABLE and tasks is not None and tasks.DetectionModel is not None:
+        allowed_globals.append(tasks.DetectionModel)
+        app.logger.info("Added tasks.DetectionModel to allowed_globals.")
+    if _YOLO_MODEL_CLASS_AVAILABLE and yolo_models_module is not None and yolo_models_module.Model is not None:
+        allowed_globals.append(yolo_models_module.Model)
+        app.logger.info("Added yolo_models.Model to allowed_globals.")
+
+    with torch.serialization.safe_globals(allowed_globals if allowed_globals else []):
+        # Use yolov8n.pt directly with ultralytics.YOLO
+        yolo_model = YOLO('yolov8n.pt')
+
+    if yolo_model is not None:
+        yolo_model.eval()
+        app.logger.info("YOLO model loaded successfully.")
+    else:
+        app.logger.warning("YOLO model loading returned None.")
+except Exception as e:
+    app.logger.error(f"Error loading YOLO model: {e}")
+    app.logger.warning("YOLO model will not be available.")
+
+try:
+    app.logger.info("Initializing EasyOCR reader...")
     # Use 'gpu=True' if EASYOCR_DEVICE is 'cuda', otherwise it defaults to CPU
     reader = easyocr.Reader(['en'], gpu=(EASYOCR_DEVICE == 'cuda'))
-    print("EasyOCR loaded successfully.")
+    app.logger.info("EasyOCR reader initialized.")
 except Exception as e:
-        print(f"Error loading EasyOCR: {e}")
-        # Print a more explicit error message if EasyOCR fails to load
-        print("EasyOCR failed to load. Please ensure you have the necessary dependencies (like CUDA if using GPU) and that the 'easyocr' package is correctly installed.")
-        reader = None # Set reader to None if loading fails
+    app.logger.error(f"Error initializing EasyOCR reader: {e}")
+    reader = None
 
-# Load YOLOv8 model
-print("Loading YOLOv8 model...")
-try:
-    yolo_model = YOLO('yolov8n.pt')
-    print("YOLOv8 model loaded successfully.")
-    # Set YOLO model to evaluation mode 
-    yolo_model.eval()
-except Exception as e:
-    print(f"Error loading YOLOv8 model: {e}")
-    # Print a more explicit error message if YOLO fails to load
-    print("YOLOv8 model failed to load. Please ensure you have internet access for the first run to download weights, or that the model file ('yolov8n.pt') is in the correct location.")
-    yolo_model = None # Set model to None if loading fails
-
+# Global state for tracking detections per client
+# Use a dictionary to store detection history and counters for each connected client 
+client_detection_state = {}
 
 # Utility Functions 
 
@@ -80,8 +135,6 @@ def decode_frame(base64_string):
         binary_data = base64.b64decode(encoded)
 
         # Use Pillow to open the image from binary data
-        # Pillow is more robust for various image formats than direct OpenCV decode from buffer
-        # Ensure Pillow is imported (can be imported globally or here)
         from PIL import Image
         import io
         image = Image.open(io.BytesIO(binary_data))
@@ -101,8 +154,15 @@ def decode_frame(base64_string):
 
 def recognize_number_plate_yolo(image, sid):
     """
-    Detects and recognizes number plates in an image using YOLOv8 and EasyOCR.
-    Emits the recognized plate text back to the client via Socket.IO.
+    Processes a single frame to detect number plates using YOLO
+    and recognize text using EasyOCR.
+
+    Args:
+        image (np.ndarray): The video frame (image).
+        sid (str): The Socket.IO session ID of the client.
+
+    Emits the recognized plate text back to the client via Socket.IO
+    after applying repeated detection filtering.
     This function runs in a background task.
     """
     if image is None:
@@ -119,9 +179,10 @@ def recognize_number_plate_yolo(image, sid):
 
     try:
         # Perform detection using YOLOv8
-        # confidence threshold (conf=0.25), suppress output (verbose=False)
         # Pass the image as a list for prediction
         results = yolo_model([image], conf=0.25, verbose=False)
+
+        recognized_plates_in_frame = []
 
         for r in results:
             # Check if 'boxes' attribute exists and is not None
@@ -136,40 +197,74 @@ def recognize_number_plate_yolo(image, sid):
                     h, w = image.shape[:2]
                     x1 = max(0, x1)
                     y1 = max(0, y1)
-                    x2 = min(w, x2)
+                    x2 = min(w, w) 
                     y2 = min(h, y2)
 
                     # Crop the detected number plate
                     cropped_plate = image[y1:y2, x1:x2]
 
-                    # Check if the cropped image is valid (not empty)
+                    # Check if the cropped image is valid 
                     if cropped_plate.shape[0] == 0 or cropped_plate.shape[1] == 0:
                         continue # Skip empty crops
 
                     # Perform OCR on the cropped plate
-                    # reader.readtext returns a list of (bbox, text, confidence) tuples
                     ocr_results = reader.readtext(cropped_plate)
 
                     plate_text = ""
                     # Concatenate text from all detected lines/words within the plate region
                     for (bbox, text, conf) in ocr_results:
-                        # or clean the extracted text (e.g., remove unwanted characters)
                         plate_text += text + " "
 
                     plate_text = plate_text.strip() # Remove leading/trailing whitespace
 
-                    # If plate text was found, emit it back to the specific client (using sid)
+                    # If plate text was found, add it to the list for this frame
                     if plate_text:
-                        print(f"Detected Plate for client {sid}: {plate_text}")
-                        # Use socketio.emit from within the background task
-                       
-                        socketio.emit('number_plate_result', {'plate': plate_text}, room=sid) # type: ignore
+                        recognized_plates_in_frame.append(plate_text)
+
+        # Apply Repeated Detection Filtering 
+        # Get the detection state for this client
+        state = client_detection_state.get(sid)
+        if state is None:
+             # Should not happen if connect handler works, but good practice
+             print(f"State not found for client {sid}. Re-initializing.")
+             client_detection_state[sid] = {
+                'last_detected_plate': None,
+                'consecutive_count': 0,
+                'last_sent_plate': None 
+            }
+             state = client_detection_state[sid]
+
+        # Simple filtering logic: only send if the same plate is detected consecutively
+        if recognized_plates_in_frame:
+            # Assuming we only care about the first detected plate for simplicity
+            current_plate = recognized_plates_in_frame[0]
+
+            if current_plate == state['last_detected_plate']:
+                state['consecutive_count'] += 1
+                # If consecutive count reaches the threshold, send the plate
+                if state['consecutive_count'] >= REQUIRED_CONSECUTIVE_DETECTIONS:
+                    # Only send if this plate hasn't just been sent after meeting the threshold
+                    if state['last_sent_plate'] != current_plate:
+                        print(f"Detected {current_plate} consecutively {state['consecutive_count']} times for client {sid}. Sending.")
+                        socketio.emit('number_plate_result', {'plate': current_plate}, room=sid) # type: ignore
+                        state['last_sent_plate'] = current_plate # Record the plate that was just sent
+            else:
+                # New plate detected
+                state['last_detected_plate'] = current_plate
+                state['consecutive_count'] = 1 # Reset consecutive count
+                # state['last_sent_plate'] = None # Don't reset last_sent_plate here
+
+        else:
+            # No plate detected in this frame
+            state['last_detected_plate'] = None
+            state['consecutive_count'] = 0 # Reset consecutive count
+            # state['last_sent_plate'] = None # Don't reset last_sent_plate here
 
     except Exception as e:
         print(f"Error during number plate recognition (in background task): {e}")
 
 
-# Flask Routes (for serving the HTML file)
+# Flask Routes (for serving the HTML file) 
 @app.route('/')
 def index():
     # Renders the index.html file from the 'templates' folder
@@ -179,24 +274,35 @@ def index():
 # These handlers are automatically recognized by Flask-SocketIO
 @socketio.on('connect')
 def handle_connect():
-    # request.sid is provided by Flask-SocketIO for the connected client
-    print('Client connected:', request.sid) # type: ignore
-    # Emit a status message back to the connected client using emit()
+    """Handler for new SocketIO connections."""
+    client_sid = request.sid # type: ignore
+    print(f'Client connected: {client_sid}')
+    # Initialize state for the new client
+    client_detection_state[client_sid] = {
+        'last_detected_plate': None,
+        'consecutive_count': 0,
+        'last_sent_plate': None # Initialize last_sent_plate
+    }
     emit('status', {'data': f'Connected to backend'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    # request.sid is available here too
-    print('Client disconnected:', request.sid) # type: ignore
+    """Handler for SocketIO disconnections."""
+    client_sid = request.sid # type: ignore
+    print(f'Client disconnected: {client_sid}')
+    # Clean up state for the disconnected client
+    if client_sid in client_detection_state:
+        del client_detection_state[client_sid]
 
 @socketio.on('video_frame')
 def handle_video_frame(data):
-    # This handler receives the video frame from the frontend.
-    # start a background task to process it
-    # to avoid blocking the main Socket.IO thread.
-    # request.sid is available in the event handler context
+    """
+    Handler for receiving video frames from the frontend.
+    We immediately start a background task to process it
+    to avoid blocking the main Socket.IO thread.
+    """
     client_sid = request.sid # type: ignore
-    # print(f"Received video frame from {client_sid}. Starting background task...") 
+    # print(f"Received video frame from {client_sid}. Starting background task...") # Uncomment for debugging
     frame = decode_frame(data)
 
     if frame is not None:
@@ -205,13 +311,27 @@ def handle_video_frame(data):
         # so the background task can emit results back to the correct client.
         socketio.start_background_task(target=recognize_number_plate_yolo, image=frame, sid=client_sid)
     # else:
-        # print(f"Failed to decode frame from {client_sid}.") 
+        # print(f"Failed to decode frame from {client_sid}.") # Uncomment for debugging decode failures
+
+@socketio.on('clear_results')
+def handle_clear_results():
+    """Handler for receiving a clear results command from the frontend."""
+    client_sid = request.sid # type: ignore
+    print(f'Received clear results command from {client_sid}')
+    # Reset the detection state for this client
+    if client_sid in client_detection_state:
+         client_detection_state[client_sid] = {
+            'last_detected_plate': None,
+            'consecutive_count': 0,
+            'last_sent_plate': None # Reset last sent plate on clear
+        }
+    # Emit an event back to the frontend to signal that results should be cleared
+    emit('clear_display', room=client_sid) # type: ignore
 
 
 # --- Main Execution ---
 if __name__ == '__main__':
+    print("Entering __main__ block to start server.")
     print("Starting Flask-SocketIO server...")
-    # socketio.run() to run the Flask app with the Socket.IO server.
-    # host='0.0.0.0' makes the server accessible externally (use 127.0.0.1 or localhost for local only)
-    # port=5000 is the default port
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
