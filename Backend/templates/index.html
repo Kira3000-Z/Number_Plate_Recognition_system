@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Number Plate Recognition (Socket.IO)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <style>
+        /* All CSS styles are now included here */
+
+        body {
+            font-family: sans-serif;
+            background-color: #333; /* Dark grey color */
+            display: flex;
+            flex-direction: column; /* Arrange children vertically */
+            justify-content: flex-start; /* Align items to the start, allowing content to push down */
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+            /* Removed overflow: hidden; to allow scrolling */
+            position: relative; /* Needed for absolute positioning of shapes */
+        }
+
+        .container {
+            /* Updated styles for the inner container */
+            /* Using rgba for background color to achieve translucency */
+            background-color: rgba(85, 85, 85, 0.3); /* Dark grey color with 0.3 opacity */
+            padding: 30px;
+            border-radius: 10px;
+            /* Black shadow (already using rgba for transparency) */
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5); /* Increased shadow opacity for visibility */
+            text-align: center;
+            max-width: 1000px; /* Increased the maximum width for the container to fit larger canvas */
+            width: 100%;
+            position: relative; /* Ensure container is above shapes */
+            z-index: 1; /* Ensure container is above shapes */
+            /* Removed opacity property here, using rgba on background instead */
+            color: #fff; /* Change text color to white for readability on dark background */
+            margin-bottom: 20px; /* Add space below the main container */
+        }
+
+        /* Style for the new results container */
+        .results-container {
+             background-color: rgba(85, 85, 85, 0.3); /* Dark grey color with 0.3 opacity */
+            padding: 20px; /* Slightly less padding than main container */
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            max-width: 1000px; /* Match width of main container */
+            width: 100%;
+            position: relative;
+            z-index: 1;
+            color: #fff;
+        }
+
+        /* Style for the main system title */
+        .system-title {
+            margin-bottom: 20px; /* Add some space below the title */
+            font-size: 1.8em; /* Increased font size for the main title */
+            font-weight: bold;
+            color: #fff; /* Changed title color to white */
+            opacity: 1.0; /* Ensure full opacity for title */
+        }
+
+         /* Style for the subtitle */
+         .system-title span {
+            display: block; /* Make the second line appear below */
+            font-size: 0.9em; /* Increased font size for the subtitle */
+            font-weight: normal;
+            margin-top: 5px; /* Space between title lines */
+            color: #ccc; /* Changed subtitle color to a lighter grey */
+            opacity: 1.0; /* Ensure full opacity for subtitle */
+        }
+
+         /* Style for the Results title */
+         .results-title {
+             font-size: 1.3em;
+             font-weight: bold;
+             color: #fff;
+             margin-bottom: 15px;
+         }
+
+
+        video {
+            /* Explicitly hide the video element - we draw its content onto the canvas */
+            display: none !important; /* Use !important to ensure it's hidden */
+        }
+
+        canvas {
+            /* Styles for the single, larger canvas display of the camera feed */
+            width: 90%; /* Make canvas take 90% of its container width */
+            max-width: 900px; /* Doubled the maximum width for the canvas */
+            height: auto; /* Maintain aspect ratio */
+            display: block; /* Make it a block element to center */
+            margin: 0 auto 20px auto; /* Center horizontally and add margin below */
+            border: 2px solid #333;
+            border-radius: 8px;
+            background-color: #000; /* Placeholder background */
+            opacity: 1.0; /* Ensure full opacity for canvas */
+        }
+
+        #numberPlateOutput {
+            /* Style for the area displaying the recognized number plate */
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9e9e9; /* Keep light background for output text */
+            border-radius: 5px;
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #333; /* Keep dark text color for readability on light background */
+            min-height: 1.5em; /* Ensure space even when empty */
+            word-wrap: break-word; /* Prevent long text overflow */
+            opacity: 1.0; /* Ensure full opacity for output */
+        }
+
+        /* Controls container styles */
+         .controls {
+            margin-bottom: 20px;
+            opacity: 1.0; /* Ensure full opacity for controls container */
+            display: flex; /* Use flexbox to align buttons in a row */
+            justify-content: center; /* Center buttons horizontally */
+            flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+        }
+
+        /* --- Button Styles and Animations --- */
+
+        .controls button {
+            padding: 10px 20px;
+            border: none;
+            /* Made button edges rounder */
+            border-radius: 20px; /* Adjust value for desired roundness */
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.2s ease; /* Added transform for animation */
+            margin: 5px; /* Added margin to all sides for spacing when wrapping */
+            font-size: 1em;
+            font-weight: bold;
+            /* Ensure buttons are above shapes */
+            position: relative;
+            z-index: 2;
+            opacity: 1.0; /* Ensure full opacity for buttons */
+        }
+
+        /* Start Button - Green */
+        #startButton {
+            background-color: #28a745; /* Green color */
+            color: white;
+        }
+
+        #startButton:hover {
+            background-color: #218838; /* Darker green on hover */
+            transform: scale(1.05); /* Slightly enlarge on hover */
+        }
+
+        #startButton:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+            transform: scale(1); /* No transform when disabled */
+        }
+
+        /* Stop Button - Red */
+        #stopButton {
+            background-color: #dc3545; /* Red color */
+            color: white;
+        }
+
+        #stopButton:hover {
+            background-color: #c82333; /* Darker red on hover */
+            transform: scale(1.05); /* Slightly enlarge on hover */
+        }
+
+        #stopButton:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+            transform: scale(1); /* No transform when disabled */
+        }
+
+         /* Clear History Button - Blue */
+        #clearHistoryButton {
+            background-color: #007bff; /* Blue color */
+            color: white;
+        }
+
+        #clearHistoryButton:hover {
+            background-color: #0056b3; /* Darker blue on hover */
+            transform: scale(1.05); /* Slightly enlarge on hover */
+        }
+
+        #clearHistoryButton:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+            transform: scale(1); /* No transform when disabled */
+        }
+
+
+        /* --- Table Styles --- */
+        .results-container table {
+            width: 100%;
+            border-collapse: collapse; /* Remove space between borders */
+            margin-top: 10px;
+            color: #333; /* Dark text for table content */
+            background-color: #fff; /* White background for table */
+            border-radius: 5px; /* Rounded corners for the table */
+            overflow: hidden; /* Hide content outside rounded corners */
+        }
+
+        .results-container th,
+        .results-container td {
+            border: 1px solid #ddd; /* Light grey border */
+            padding: 10px;
+            text-align: left;
+        }
+
+        .results-container th {
+            background-color: #f2f2f2; /* Light grey background for headers */
+            font-weight: bold;
+        }
+
+        /* --- Background Shapes and Animation --- */
+        /* (Shape styles are the same as before) */
+
+        .background-shapes {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* Removed overflow: hidden here too, as body handles it */
+            z-index: 0; /* Ensure shapes are behind content */
+        }
+
+        .shape {
+            position: absolute;
+            display: block;
+            list-style: none;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.6);
+            animation: animate 25s linear infinite;
+            bottom: -150px;
+            opacity: 0.6;
+            border-radius: 0;
+            border: none;
+            box-sizing: border-box;
+        }
+
+        .shape:nth-child(1), .shape:nth-child(4), .shape:nth-child(8), .shape:nth-child(11) { background: rgba(255, 99, 71, 0.6); width: 80px; height: 80px; }
+        .shape:nth-child(2), .shape:nth-child(5), .shape:nth-child(9), .shape:nth-child(12) { background: rgba(60, 179, 113, 0.6); width: 60px; height: 60px; border-radius: 50%; }
+        .shape:nth-child(3), .shape:nth-child(6), .shape:nth-child(10), .shape:nth-child(13) { background: none; width: 0; height: 0; border-left: 30px solid transparent; border-right: 30px solid transparent; border-bottom: 60px solid rgba(65, 105, 225, 0.6); }
+        .shape:nth-child(7) { background: none; width: 0; height: 0; border-left: 75px solid transparent; border-right: 75px solid transparent; border-bottom: 150px solid rgba(255, 20, 147, 0.6); animation-duration: 22s; }
+        .shape:nth-child(14) { background: rgba(173, 216, 230, 0.6); width: 50px; height: 50px; border-radius: 50%; animation-duration: 21s; }
+        .shape:nth-child(15) { background: rgba(240, 128, 128, 0.6); width: 120px; height: 120px; animation-duration: 26s; }
+
+        .shape:nth-child(1) { left: 25%; animation-delay: 0s; animation-duration: 25s; }
+        .shape:nth-child(2) { left: 10%; animation-delay: 2s; animation-duration: 12s; }
+        .shape:nth-child(3) { left: 70%; animation-delay: 4s; animation-duration: 18s; }
+        .shape:nth-child(4) { left: 40%; animation-delay: 0s; animation-duration: 18s; }
+        .shape:nth-child(5) { left: 65%; animation-delay: 0s; animation-duration: 20s; }
+        .shape:nth-child(6) { left: 75%; animation-delay: 3s; animation-duration: 15s; }
+        .shape:nth-child(7) { left: 35%; animation-delay: 7s; animation-duration: 22s; }
+        .shape:nth-child(8) { left: 50%; animation-delay: 1s; animation-duration: 14s; }
+        .shape:nth-child(9) { left: 15%; animation-delay: 5s; animation-duration: 28s; }
+        .shape:nth-child(10) { left: 85%; animation-delay: 2s; animation-duration: 16s; }
+        .shape:nth-child(11) { left: 5%; animation-delay: 8s; animation-duration: 30s; }
+        .shape:nth-child(12) { left: 60%; animation-delay: 6s; animation-duration: 24s; }
+        .shape:nth-child(13) { left: 45%; animation-delay: 10s; animation-duration: 19s; }
+        .shape:nth-child(14) { left: 90%; animation-delay: 4s; animation-duration: 21s; }
+        .shape:nth-child(15) { left: 20%; animation-delay: 12s; animation-duration: 26s; }
+
+
+        /* Keyframes for the floating animation */
+        @keyframes animate {
+            0% {
+                transform: translateY(0) rotate(0deg);
+                opacity: 0.6;
+                border-radius: 0; /* Start as defined in shape or nth-child */
+            }
+            100% {
+                transform: translateY(-1000px) rotate(720deg);
+                opacity: 0;
+                /* Shapes might change form at the end, e.g., become round */
+                /* border-radius: 50%; */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="background-shapes">
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+    </div>
+
+    <div class="container">
+        <h2 class="system-title">
+            ANPR SYSTEM
+            <span>Automatic NumberPlate Recognition System</span>
+        </h2>
+
+        <h1 class="text-2xl font-bold mb-4" style="display: none;">Live Number Plate Recognition (Streaming)</h1>
+
+
+        <video id="videoFeed" autoplay playsinline></video>
+
+        <canvas id="videoCanvas"></canvas>
+
+        <div class="controls">
+             <button id="startButton">Start Streaming</button>
+             <button id="stopButton" disabled>Stop Streaming</button>
+             <button id="clearHistoryButton">Clear History</button> </div>
+
+        <div id="numberPlateOutput">Connecting to backend...</div>
+
+    </div>
+
+    <div class="results-container">
+        <h3 class="results-title">Results</h3>
+        <table id="resultsTable">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Number Plate</th>
+                </tr>
+            </thead>
+            <tbody>
+                </tbody>
+        </table>
+    </div>
+
+    <script>
+        // Get references to HTML elements
+        const videoFeed = document.getElementById('videoFeed');
+        const videoCanvas = document.getElementById('videoCanvas');
+        const canvasContext = videoCanvas.getContext('2d');
+        const numberPlateOutput = document.getElementById('numberPlateOutput'); // Used for status messages
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const clearHistoryButton = document.getElementById('clearHistoryButton'); // Reference to the new button
+        const resultsTableBody = document.getElementById('resultsTable').getElementsByTagName('tbody')[0]; // Get the tbody of the results table
+
+        let socket = null; // Variable to hold the Socket.IO object
+        let streamingInterval = null; // To hold the interval timer for sending frames
+        const frameSendInterval = 100; // Send a frame every 100ms (~10 fps). Adjust for performance vs latency.
+        let cameraStream = null; // Variable to hold the camera stream object
+
+        // Function to check if Socket.IO is connected and enable/disable the start button
+        // Camera readiness is now checked within the startCamera function before enabling streaming
+        function checkSocketReadyAndEnableButton() {
+            const isSocketConnected = socket && socket.connected; // Use socket.connected for Socket.IO
+
+            console.log(`[checkSocketReadyAndEnableButton] Checking ready state: Socket.IO connected: ${isSocketConnected}`);
+
+            // Only enable the start button if Socket.IO is connected
+            if (isSocketConnected) {
+                console.log('[checkSocketReadyAndEnableButton] Socket.IO connected. Enabling Start button.');
+                startButton.disabled = false;
+            } else {
+                console.log('[checkSocketReadyAndEnableButton] Socket.IO not connected. Disabling Start button.');
+                startButton.disabled = true; // Keep disabled if not connected
+            }
+        }
+
+
+        // --- Frontend Video Display Logic ---
+        // Access the user's webcam and display it on the canvas
+        function startCamera() {
+            console.log('[startCamera] Attempting to start camera...');
+            // Check if the browser supports media devices (like cameras)
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                // Request access to the video stream
+                navigator.mediaDevices.getUserMedia({ video: true })
+                    .then(function(stream) {
+                        console.log('[startCamera] Camera stream obtained.');
+                        cameraStream = stream; // Store the stream
+                        // Attach the camera stream to the hidden video element
+                        videoFeed.srcObject = cameraStream;
+                        // Start playing the video stream
+                        videoFeed.play();
+
+                        // When video metadata (like dimensions) is loaded
+                        videoFeed.onloadedmetadata = function() {
+                            console.log('[startCamera] Video metadata loaded. Setting canvas size.');
+                            // Set the canvas dimensions to match the video feed dimensions for correct drawing
+                            videoCanvas.width = videoFeed.videoWidth;
+                            videoCanvas.height = videoFeed.videoHeight;
+                            // Start continuously drawing frames from the video onto the canvas
+                            drawFrameOnCanvas();
+                            console.log('[startCamera] Camera started and video metadata loaded.');
+
+                            // Now that camera is ready, attempt to start sending frames
+                            startSendingFrames(); // Call startStreaming after camera is ready
+                        };
+                    })
+                    .catch(function(error) {
+                        // Handle errors if camera access fails
+                        console.error('[startCamera] Error accessing the camera: ', error);
+                        numberPlateOutput.textContent = 'Error: Could not access camera for display. Please ensure you have a camera connected and grant permissions.';
+                         // Re-enable the start button if camera access failed (Socket.IO might still be connected)
+                         checkSocketReadyAndEnableButton();
+                         stopButton.disabled = true;
+                    });
+            } else {
+                // Handle cases where the browser doesn't support getUserMedia
+                console.error('[startCamera] getUserMedia not supported in this browser');
+                numberPlateOutput.textContent = 'Error: Your browser does not support accessing media devices.';
+                 // Re-enable the start button if browser doesn't support camera (Socket.IO might still be connected)
+                 checkSocketReadyAndEnableButton();
+                 stopButton.disabled = true;
+            }
+        }
+
+        // Stop the camera stream
+        function stopCamera() {
+            console.log('[stopCamera] Stopping camera...');
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+                videoFeed.srcObject = null;
+                cameraStream = null;
+                console.log('[stopCamera] Camera stopped.');
+            }
+             // Clear the canvas when camera stops
+             canvasContext.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+             // Optionally set canvas size to 0 or a placeholder size
+             videoCanvas.width = 0;
+             videoCanvas.height = 0;
+        }
+
+
+        // Draw the current video frame from the hidden video element onto the visible canvas
+        function drawFrameOnCanvas() {
+            if (videoFeed.paused || videoFeed.ended || !cameraStream) { // Check cameraStream existence
+                return;
+            }
+            canvasContext.drawImage(videoFeed, 0, 0, videoCanvas.width, videoCanvas.height);
+            requestAnimationFrame(drawFrameOnCanvas);
+        }
+
+        // --- Socket.IO Communication ---
+
+        function connectSocketIO() {
+             console.log('[connectSocketIO] Attempting to connect Socket.IO...');
+             // Close any existing Socket.IO connection before attempting to open a new one
+            if (socket && socket.connected) { // Use socket.connected for Socket.IO
+                console.log('[connectSocketIO] Closing existing Socket.IO connection.');
+                socket.disconnect(); // Use disconnect() for Socket.IO
+            }
+
+            // Connect to the Socket.IO server. The path '/socket.io/' is the default.
+            // It will attempt to connect to the server that served this HTML page.
+            // --- Increased Ping Timeout and Interval ---
+            // Match the backend settings to give more time for processing
+            socket = io({
+                pingInterval: 60000, // 60 seconds (in milliseconds)
+                pingTimeout: 60000   // 60 seconds (in milliseconds)
+            }); // Connects to the current host and default path
+
+            // Event handler for when the Socket.IO connection is successfully opened
+            socket.on('connect', function() {
+                console.log('[Socket.IO Event] Connected. ID:', socket.id);
+                numberPlateOutput.textContent = 'Connection established. Click "Start Streaming" to begin.';
+                 // Check if Socket.IO is ready and enable the start button
+                 checkSocketReadyAndEnableButton();
+                 stopButton.disabled = true; // Ensure stop button is disabled initially
+            });
+
+            // Event handler for receiving recognized number plates from the backend
+            socket.on('number_plate_result', function(data) {
+                console.log('[Socket.IO Event] Number plate result received:', data);
+                if (data && data.plate) {
+                    addResultToTable(data.plate);
+                    numberPlateOutput.textContent = `Latest Detected: ${data.plate}`;
+                }
+            });
+
+             // Event handler for receiving status messages from the backend
+             socket.on('status', function(data) {
+                 console.log('[Socket.IO Event] Status message received:', data);
+                 if (data && data.data) {
+                     // You could update a separate status area if you had one
+                     console.log('[Socket.IO Event] Backend Status:', data.data);
+                 }
+             });
+
+
+            // Event handler for Socket.IO errors
+            socket.on('connect_error', function(error) {
+                 console.error('[Socket.IO Event] Connection error:', error);
+                 numberPlateOutput.textContent = 'Connection Error: Could not connect to backend.';
+                 startButton.disabled = true; // Disable button on error
+                 stopButton.disabled = true;
+                 stopStreaming(); // Stop streaming on error
+                 stopCamera(); // Stop camera on Socket.IO error
+                 checkSocketReadyAndEnableButton(); // Re-check state, button should be disabled
+                 console.log('[Socket.IO Event] connection error handler finished.');
+            });
+
+            socket.on('disconnect', function(reason) {
+                console.log('[Socket.IO Event] Disconnected:', reason);
+                console.log(`[Socket.IO Event] Disconnect reason: ${reason}`);
+                 startButton.disabled = true; // Disable button on close
+                 stopButton.disabled = true;
+                 stopStreaming(); // Stop streaming if the connection closes
+                 stopCamera(); // Stop camera on Socket.IO close
+                 checkSocketReadyAndEnableButton(); // Re-check state, button should be disabled
+                 numberPlateOutput.textContent = 'Socket.IO connection closed.';
+                 console.log('[Socket.IO Event] disconnect handler finished.');
+            });
+        }
+
+        // --- Results Table Logic ---
+        function addResultToTable(plate) {
+            const now = new Date();
+            const timestamp = now.toLocaleTimeString(); // Get current time
+
+            const newRow = resultsTableBody.insertRow(0); // Add new row at the top
+
+            const timestampCell = newRow.insertCell(0);
+            const plateCell = newRow.insertCell(1);
+
+            timestampCell.textContent = timestamp;
+            plateCell.textContent = plate;
+        }
+
+        // Function to clear the results table
+        function clearResultsTable() {
+            console.log('Clearing results table.');
+            resultsTableBody.innerHTML = ''; // Clear the table body
+            numberPlateOutput.textContent = 'Results cleared.'; // Update status message
+        }
+
+
+        // --- Streaming Logic ---
+        // Function to start sending frames over Socket.IO
+        function startSendingFrames() {
+             console.log('[startSendingFrames] Starting to send frames...');
+             // Check if Socket.IO is open AND camera stream is available before starting to stream frames
+            if (socket && socket.connected && cameraStream) { // Check cameraStream existence
+                startButton.disabled = true; // Disable the start button while streaming
+                stopButton.disabled = false; // Enable the stop button
+                numberPlateOutput.textContent = 'Streaming started...';
+
+                // Set up an interval timer to capture and send frames periodically
+                streamingInterval = setInterval(function() {
+                    // Capture the current frame from the canvas as a JPEG data URL (base64 string)
+                    const dataUrl = videoCanvas.toDataURL('image/jpeg', 0.7);
+
+                    // Send the captured frame data (base64 string) over the Socket.IO connection
+                    if (socket.connected) { // Use socket.connected for Socket.IO
+                         // console.log('Emitting video_frame'); // Debug log before emit
+                         socket.emit('video_frame', dataUrl); // Use emit() to send the data
+                         // console.log('Emitted frame:', dataUrl.substring(0, 50) + '...'); // Optional: Log part of the data URL for debugging
+                    } else {
+                        console.warn('[startSendingFrames] Socket.IO not connected, cannot send frame.');
+                        stopStreaming(); // Stop streaming if Socket.IO closes unexpectedly
+                    }
+                }, frameSendInterval); // Send a frame every X milliseconds (defined by frameSendInterval)
+
+                console.log('[startSendingFrames] Streaming interval started.');
+
+            } else {
+                console.warn('[startSendingFrames] Cannot start streaming: Socket.IO not connected or camera not ready.');
+                 numberPlateOutput.textContent = 'Cannot start streaming: Backend not connected or camera not ready.';
+                 console.log(`Socket.IO state: ${socket ? (socket.connected ? 'Connected' : 'Disconnected') : 'null'}, Camera ready: ${!!cameraStream}`); // Added state check
+                 // Re-enable the start button if conditions not met (Socket.IO might still be connected)
+                 checkSocketReadyAndEnableButton();
+                 stopButton.disabled = true;
+            }
+        }
+
+
+        function stopStreaming() {
+            console.log('[stopStreaming] Stop Streaming button clicked.');
+            // Clear the interval timer to stop sending frames
+            if (streamingInterval !== null) {
+                clearInterval(streamingInterval);
+                streamingInterval = null;
+                console.log('[stopStreaming] Streaming interval stopped.');
+            }
+            startButton.disabled = false; // Enable the start button
+            stopButton.disabled = true; // Disable the stop button
+            numberPlateOutput.textContent = 'Streaming stopped.';
+            stopCamera(); // Stop the camera when streaming stops
+            checkSocketReadyAndEnableButton(); // Re-check state, start button should be enabled if WS is still open
+        }
+
+
+        // --- Event Listeners ---
+        // Add click event listeners to the start and stop buttons
+        startButton.addEventListener('click', function() {
+            console.log('[Event Listener] Start button clicked.');
+            // When start is clicked, first try to start the camera
+            // startCamera() will call startSendingFrames() if successful and Socket.IO is open
+            startCamera();
+             // Disable the start button immediately to prevent multiple clicks
+            startButton.disabled = true;
+        });
+        stopButton.addEventListener('click', stopStreaming);
+        // Add event listener for the new Clear History button
+        clearHistoryButton.addEventListener('click', clearResultsTable);
+
+
+        // --- Initialization ---
+        console.log('Page loaded, starting initialization.');
+        // Attempt to connect to the Socket.IO backend when the page loads
+        connectSocketIO();
+        // Start button is initially disabled until Socket.IO is open and camera is ready (after startCamera is called)
+        startButton.disabled = true;
+
+
+        // Optional: Handle window closing or page navigation to close Socket.IO cleanly
+        window.onbeforeunload = function() {
+            console.log('Window beforeunload event.');
+            if (socket && socket.connected) { // Use socket.connected for Socket.IO
+                console.log('Disconnecting Socket.IO on unload.');
+                socket.disconnect(); // Use disconnect() for Socket.IO
+            }
+            stopStreaming(); // Clear the streaming interval on unload
+        };
+
+    </script>
+</body>
+</html>
